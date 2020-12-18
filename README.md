@@ -2,15 +2,20 @@
 
 Application listens for MQTT-broker and stores messages to InfluxDB.
 
-    value = 25
-    topic = home/room1/temperature
+```
+value = 25
+topic = home/room1/temperature
+```
 
 is sent to InfluxDB with values
 
-    database   = home
-    serie      = temperature
-    value      = 25
-    tag:source = room1
+```
+database   = home
+sensor     = room1
+value      = 25
+tag:source = room1
+tag:unit   = fahrenheit (currently hardcoded)
+```
 
 ## Running
 

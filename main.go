@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"log"
 	"os"
 	"os/signal"
 	"strconv"
@@ -11,12 +12,11 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/influxdata/influxdb/client/v2"
+	"github.com/influxdata/influxdb1-client/v2"
 
+	// TODO: use native flag library
 	"github.com/spf13/pflag"
 	"github.com/spf13/viper"
-
-	log "github.com/sirupsen/logrus"
 
 	MQTT "github.com/eclipse/paho.mqtt.golang"
 )
@@ -25,30 +25,27 @@ var brokerURL string
 var dbURL string
 
 func sendValueToDatabase(database string, source string, sensor string, value float64) {
-	msgLog := log.WithFields(log.Fields{
-		"database": database,
-		"source":   source,
-		"sensor":   sensor,
-	})
+	logFields := fmt.Sprintf("database=%s source=%s sensor=%s", database, source, sensor)
 	c, err := client.NewHTTPClient(client.HTTPConfig{
 		Addr: dbURL,
 	})
 	if err != nil {
-		msgLog.Fatal(err)
+		log.Fatal(err, logFields)
 	}
 	defer c.Close()
 
 	// Create a new point batch
 	bp, err := client.NewBatchPoints(client.BatchPointsConfig{
 		Database:  database,
-		Precision: "s",
+		Precision: "s", // TODO: does this precision make sense for temp/mV?
 	})
 	if err != nil {
-		msgLog.Fatal(err)
+		log.Fatal(err, logFields)
 	}
 
 	// Create a point and add to batch
-	tags := map[string]string{"source": source}
+	// TODO: get unit (below) as a param
+	tags := map[string]string{"source": source, "unit": "fahrenheit"}
 
 	fields := map[string]interface{}{
 		"value": value,
@@ -56,13 +53,13 @@ func sendValueToDatabase(database string, source string, sensor string, value fl
 
 	pt, err := client.NewPoint(sensor, tags, fields, time.Now())
 	if err != nil {
-		msgLog.Fatal(err)
+		log.Fatal(err, logFields)
 	}
 	bp.AddPoint(pt)
 
 	// Write the batch
 	if err := c.Write(bp); err != nil {
-		msgLog.Fatal(err)
+		log.Fatal(err, logFields)
 	}
 
 }
@@ -71,37 +68,32 @@ func receiveMQTTMessage(ctx context.Context, receiveChannel <-chan MQTT.Message)
 	for {
 		select {
 		case <-ctx.Done():
-			log.Info("Context cancelled, quitting listener...")
+			log.Print("Context cancelled, quitting listener...")
 			return
 		case message := <-receiveChannel:
-			msgLog := log.WithFields(log.Fields{
-				"topic":   message.Topic(),
-				"payload": string(message.Payload()),
-			})
+			logFields := fmt.Sprintf("topic=%s payload=%s", message.Topic(), string(message.Payload()))
 
-			msgLog.Info("Received message")
+			log.Print("Received message", logFields)
 
 			topicParts := strings.Split(message.Topic(), "/")
 
 			if len(topicParts) >= 3 {
-				database := topicParts[1]
-				source := topicParts[2]
-				sensor := strings.Join(topicParts[3:len(topicParts)], "-")
+				// TODO: check out if the "sensor" is stdout/stderr/lastwill
+				database := topicParts[0]
+				source := topicParts[1]
+				sensor := topicParts[2]
 
 				payload, err := strconv.ParseFloat(string(message.Payload()), 32)
 
 				if err != nil {
-					msgLog.WithFields(log.Fields{
-						"error": err,
-					}).Info("Failed to parse number for payload")
+					log.Printf("Failed to parse number for payload, error: %s, %s", err, logFields)
 					continue
 				}
 				sendValueToDatabase(database, source, sensor, payload)
 			} else {
-				msgLog.Info("Message did not contain expected topic parts, skipping it")
+				log.Print("Message did not contain expected topic parts, skipping it", logFields)
 			}
 		}
-
 	}
 }
 
@@ -140,8 +132,8 @@ func main() {
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
 
+	wg.Add(1)
 	go func() {
-		wg.Add(1)
 		select {
 		case <-sigs:
 			cancel()
@@ -153,23 +145,29 @@ func main() {
 	wg.Add(1)
 	// start listening to input channel
 	go func(ctx context.Context, channel chan MQTT.Message) {
-		log.Info("Starting listener")
+		log.Print("Starting listener")
 		defer wg.Done()
 		receiveMQTTMessage(ctx, channel)
-		log.Info("Listener returned")
+		log.Print("Listener returned")
 	}(ctx, receiveChannel)
 
-	log.Infof("Listener running")
+	log.Printf("Listener running")
 	wg.Wait()
 }
 
 func readConfiguration() {
 	// allow setting values also with commandline flags
 	pflag.String("broker", "tcp://localhost:1883", "MQTT-broker url")
-	viper.BindPFlag("broker", pflag.Lookup("broker"))
+	err := viper.BindPFlag("broker", pflag.Lookup("broker"))
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	pflag.String("db", "http://localhost:8086", "Influx database connection url")
-	viper.BindPFlag("db", pflag.Lookup("db"))
+	err = viper.BindPFlag("db", pflag.Lookup("db"))
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	// parse values from environment variables
 	viper.AutomaticEnv()
@@ -177,6 +175,6 @@ func readConfiguration() {
 	brokerURL = viper.GetString("broker")
 	dbURL = viper.GetString("db")
 
-	log.Infof("Using broker %s", brokerURL)
-	log.Infof("Using database %s", dbURL)
+	log.Printf("Using broker %s", brokerURL)
+	log.Printf("Using database %s", dbURL)
 }

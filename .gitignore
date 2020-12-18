@@ -1,3 +1,7 @@
 *.exe
 vendor
 home-temperature-monitor
+tags
+MQTT-InfluxDB-bridge
+!bin
+bin/*
